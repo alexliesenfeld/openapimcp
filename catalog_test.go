@@ -7,6 +7,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"testing/fstest"
 )
 
 func TestLoadCatalogBuildsOperationNamesAndGroupedSchemas(t *testing.T) {
@@ -279,6 +280,73 @@ paths:
 	op := findOperation(t, catalog, "GET", "/pets/{id}")
 	if len(op.Parameters) != 1 || op.Parameters[0].Name != "id" {
 		t.Fatalf("parameters = %#v, want resolved id parameter", op.Parameters)
+	}
+}
+
+func TestLoadCatalogFromFSResolvesLocalRefs(t *testing.T) {
+	files := fstest.MapFS{
+		"openapi.yaml": &fstest.MapFile{Data: []byte(`
+openapi: 3.0.3
+info:
+  title: Embedded API
+  version: 1.0.0
+paths:
+  /pets/{petId}:
+    get:
+      operationId: getPet
+      parameters:
+        - $ref: './parameters.yaml#/components/parameters/PetID'
+      responses:
+        '200':
+          description: ok
+          content:
+            application/json:
+              schema:
+                $ref: './schemas.yaml#/components/schemas/Pet'
+`)},
+		"parameters.yaml": &fstest.MapFile{Data: []byte(`
+openapi: 3.0.3
+info:
+  title: Parameters
+  version: 1.0.0
+paths: {}
+components:
+  parameters:
+    PetID:
+      name: petId
+      in: path
+      required: true
+      schema:
+        type: string
+`)},
+		"schemas.yaml": &fstest.MapFile{Data: []byte(`
+openapi: 3.0.3
+info:
+  title: Schemas
+  version: 1.0.0
+paths: {}
+components:
+  schemas:
+    Pet:
+      type: object
+      properties:
+        id:
+          type: string
+          description: Pet ID
+`)},
+	}
+
+	catalog, err := LoadCatalogFromFS(context.Background(), files, "openapi.yaml", Config{})
+	if err != nil {
+		t.Fatalf("LoadCatalogFromFS() error = %v", err)
+	}
+
+	op := findOperation(t, catalog, "GET", "/pets/{petId}")
+	if len(op.Parameters) != 1 || op.Parameters[0].Name != "petId" {
+		t.Fatalf("Parameters = %#v, want resolved petId", op.Parameters)
+	}
+	if !strings.Contains(op.ResponseDocumentation, "body.id") {
+		t.Fatalf("ResponseDocumentation = %q, want resolved schema fields", op.ResponseDocumentation)
 	}
 }
 

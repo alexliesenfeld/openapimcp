@@ -3,6 +3,7 @@ package goapitomcp
 import (
 	"context"
 	"io"
+	"io/fs"
 	"log/slog"
 	"net/http"
 	"net/url"
@@ -15,6 +16,7 @@ type Config struct {
 	Spec                io.Reader
 	SpecBaseURI         *url.URL
 	RefRoot             string
+	RefFS               fs.FS
 	Name                string
 	Version             string
 	ToolNamePrefix      string
@@ -34,6 +36,7 @@ type Config struct {
 // an operation must match it to remain visible. Exclude fields are evaluated
 // afterward and can still remove matching operations.
 type OperationFilter struct {
+	ExcludeInternal     bool
 	ExcludePaths        []string
 	ExcludePathPatterns []string
 	ExcludeOperationIDs []string

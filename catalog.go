@@ -8,8 +8,10 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"io/fs"
 	"net/url"
 	"os"
+	"path"
 	"path/filepath"
 	"slices"
 	"strings"
@@ -33,7 +35,10 @@ func LoadCatalog(ctx context.Context, cfg Config) (*Catalog, error) {
 	loader := openapi3.NewLoader()
 	loader.Context = ctx
 
-	if cfg.SpecBaseURI != nil {
+	if cfg.RefFS != nil {
+		loader.IsExternalRefsAllowed = true
+		loader.ReadFromURIFunc = fsRefReader(cfg.RefFS)
+	} else if cfg.SpecBaseURI != nil {
 		refRoot, err := resolveRefRoot(cfg)
 		if err != nil {
 			return nil, err
@@ -104,7 +109,7 @@ func LoadCatalog(ctx context.Context, cfg Config) (*Catalog, error) {
 				if operation == nil {
 					continue
 				}
-				if !cfg.Filter.Allows(method, pathName, operation.OperationID, operation.Tags) {
+				if !operationFilterAllows(cfg.Filter, method, pathName, operation) {
 					continue
 				}
 				op, err := buildOperation(pathName, method, pathItem, operation, doc.Security, cfg.ToolNamePrefix, usedNames)
@@ -123,6 +128,21 @@ func supportedOpenAPIVersion(version string) bool {
 	return version == "3" ||
 		version == "3.0" || strings.HasPrefix(version, "3.0.") ||
 		version == "3.1" || strings.HasPrefix(version, "3.1.")
+}
+
+func operationFilterAllows(filter *OperationFilter, method string, pathName string, operation *openapi3.Operation) bool {
+	if operation == nil {
+		return false
+	}
+	if filter != nil && filter.ExcludeInternal && isTrueExtension(operation.Extensions["x-internal"]) {
+		return false
+	}
+	return filter.Allows(method, pathName, operation.OperationID, operation.Tags)
+}
+
+func isTrueExtension(value any) bool {
+	result, ok := value.(bool)
+	return ok && result
 }
 
 func resolveRefRoot(cfg Config) (string, error) {
@@ -161,6 +181,22 @@ func guardedRefReader(refRoot string) openapi3.ReadFromURIFunc {
 			return nil, fmt.Errorf("OpenAPI ref %q escapes RefRoot %q", candidate, refRoot)
 		}
 		return os.ReadFile(candidate)
+	}
+}
+
+func fsRefReader(files fs.FS) openapi3.ReadFromURIFunc {
+	return func(_ *openapi3.Loader, uri *url.URL) ([]byte, error) {
+		if uri.Scheme != "" && uri.Scheme != "file" {
+			return nil, fmt.Errorf("remote OpenAPI refs are not supported: %s", uri.String())
+		}
+		if uri.Host != "" {
+			return nil, fmt.Errorf("OpenAPI refs with hosts are not supported: %s", uri.String())
+		}
+		name := strings.TrimPrefix(path.Clean(uri.Path), "/")
+		if name == "." || name == "" {
+			return nil, errors.New("empty OpenAPI ref path")
+		}
+		return fs.ReadFile(files, name)
 	}
 }
 

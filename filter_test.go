@@ -18,10 +18,11 @@ func TestLoadCatalogFiltersOperations(t *testing.T) {
 	if err != nil {
 		t.Fatalf("LoadCatalog() error = %v", err)
 	}
-	if len(catalog.Operations) != 3 {
-		t.Fatalf("operations = %d, want 3", len(catalog.Operations))
+	if len(catalog.Operations) != 4 {
+		t.Fatalf("operations = %d, want 4", len(catalog.Operations))
 	}
 	assertHasOperation(t, catalog, "GET", "/public")
+	assertHasOperation(t, catalog, "GET", "/internal/status")
 	assertHasOperation(t, catalog, "GET", "/users/{id}")
 	assertHasOperation(t, catalog, "POST", "/users/{id}")
 	assertNoOperation(t, catalog, "GET", "/admin/users")
@@ -69,6 +70,20 @@ func TestLoadCatalogAppliesExcludeAfterIncludeOnlyFilters(t *testing.T) {
 	if op.OperationID != "getUser" {
 		t.Fatalf("OperationID = %q, want getUser", op.OperationID)
 	}
+}
+
+func TestLoadCatalogExcludesInternalOperations(t *testing.T) {
+	catalog, err := LoadCatalog(context.Background(), Config{
+		Spec: strings.NewReader(filterSpec()),
+		Filter: &OperationFilter{
+			ExcludeInternal: true,
+		},
+	})
+	if err != nil {
+		t.Fatalf("LoadCatalog() error = %v", err)
+	}
+	assertNoOperation(t, catalog, "GET", "/internal/status")
+	assertHasOperation(t, catalog, "GET", "/public")
 }
 
 func TestOperationFilterAllowsWildcardPathPatterns(t *testing.T) {
@@ -141,6 +156,14 @@ paths:
     get:
       operationId: debugStatus
       tags: [debug]
+      responses:
+        '200':
+          description: ok
+  /internal/status:
+    get:
+      operationId: internalStatus
+      tags: [internal]
+      x-internal: true
       responses:
         '200':
           description: ok

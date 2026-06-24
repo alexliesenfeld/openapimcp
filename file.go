@@ -1,11 +1,14 @@
 package goapitomcp
 
 import (
+	"bytes"
 	"context"
 	"fmt"
+	"io/fs"
 	"net/http"
 	"net/url"
 	"os"
+	"path"
 	"path/filepath"
 
 	"github.com/modelcontextprotocol/go-sdk/mcp"
@@ -44,6 +47,36 @@ func NewHandlerFromFile(ctx context.Context, filename string, cfg Config) (http.
 	return NewHandler(ctx, cfg)
 }
 
+// LoadCatalogFromFS opens an OpenAPI document from fsys and resolves local
+// relative refs from the same filesystem.
+func LoadCatalogFromFS(ctx context.Context, fsys fs.FS, name string, cfg Config) (*Catalog, error) {
+	cfg, err := configWithSpecFS(fsys, name, cfg)
+	if err != nil {
+		return nil, err
+	}
+	return LoadCatalog(ctx, cfg)
+}
+
+// NewServerFromFS opens an OpenAPI document from fsys and creates an MCP server
+// from it.
+func NewServerFromFS(ctx context.Context, fsys fs.FS, name string, cfg Config) (*mcp.Server, error) {
+	cfg, err := configWithSpecFS(fsys, name, cfg)
+	if err != nil {
+		return nil, err
+	}
+	return NewServer(ctx, cfg)
+}
+
+// NewHandlerFromFS opens an OpenAPI document from fsys and returns a standard
+// Streamable HTTP MCP handler for it.
+func NewHandlerFromFS(ctx context.Context, fsys fs.FS, name string, cfg Config) (http.Handler, error) {
+	cfg, err := configWithSpecFS(fsys, name, cfg)
+	if err != nil {
+		return nil, err
+	}
+	return NewHandler(ctx, cfg)
+}
+
 func configWithSpecFile(filename string, cfg Config) (Config, *os.File, error) {
 	file, err := os.Open(filename)
 	if err != nil {
@@ -61,6 +94,19 @@ func configWithSpecFile(filename string, cfg Config) (Config, *os.File, error) {
 	return cfg, file, nil
 }
 
+func configWithSpecFS(fsys fs.FS, name string, cfg Config) (Config, error) {
+	data, err := fs.ReadFile(fsys, name)
+	if err != nil {
+		return cfg, fmt.Errorf("open OpenAPI spec file: %w", err)
+	}
+	cfg.Spec = bytes.NewReader(data)
+	cfg.RefFS = fsys
+	if cfg.SpecBaseURI == nil {
+		cfg.SpecBaseURI = fsURI(name)
+	}
+	return cfg, nil
+}
+
 func fileURI(filename string) (*url.URL, error) {
 	absolute, err := filepath.Abs(filename)
 	if err != nil {
@@ -70,4 +116,8 @@ func fileURI(filename string) (*url.URL, error) {
 		Scheme: "file",
 		Path:   filepath.ToSlash(absolute),
 	}, nil
+}
+
+func fsURI(name string) *url.URL {
+	return &url.URL{Path: "/" + path.Clean(name)}
 }

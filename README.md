@@ -49,6 +49,19 @@ mcpHandler, err := goapitomcp.NewHandlerFromFile(ctx, "openapi.yaml", goapitomcp
 })
 ```
 
+If your spec is embedded, the FS helpers resolve relative `$ref`s from the same
+filesystem:
+
+```go
+//go:embed api/*
+var apiFiles embed.FS
+
+apiBase, _ := url.Parse("https://api.example.com")
+mcpHandler, err := goapitomcp.NewHandlerFromFS(ctx, apiFiles, "api/openapi.yaml", goapitomcp.Config{
+    BaseURL: apiBase,
+})
+```
+
 ## Filtering
 
 Use `Config.Filter` to decide which OpenAPI operations are exposed as MCP tools.
@@ -57,6 +70,7 @@ Include-only rules run first; exclude rules run second.
 ```go
 mcpHandler, err := goapitomcp.NewHandlerFromFile(ctx, "openapi.yaml", goapitomcp.Config{
     Filter: &goapitomcp.OperationFilter{
+        ExcludeInternal:     true,
         ExcludePathPatterns: []string{"/admin/*", "/internal/*"},
         ExcludeMethods:      []string{"DELETE", "PATCH"},
         ExcludeTags:         []string{"debug", "internal"},
@@ -82,10 +96,10 @@ mux.Handle("/mcp", goapitomcp.WithCORS(mcpHandler, goapitomcp.CORSOptions{
 ## Features
 
 - Dynamic OpenAPI-to-MCP conversion at startup.
-- Standard `http.Handler` and `*mcp.Server` constructors, including file-based helpers.
+- Standard `http.Handler` and `*mcp.Server` constructors, including file and `fs.FS` helpers.
 - OpenAPI 3.0 and 3.1 support.
-- Local multi-file `$ref` support with `SpecBaseURI` and `RefRoot`.
-- Operation filtering by path, wildcard path pattern, operation ID, method, and tag.
+- Local multi-file `$ref` support with `SpecBaseURI`, `RefRoot`, and embedded `fs.FS` specs.
+- Operation filtering by path, wildcard path pattern, operation ID, method, tag, and `x-internal`.
 - Path, query, header, cookie, JSON body, and form body request mapping.
 - Tool-name prefixing, response-derived output schemas, structured MCP results, and response field documentation for agents.
 - OpenAPI security scheme metadata plus opt-in default credential application.
