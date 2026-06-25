@@ -141,7 +141,6 @@ func NewHandler(ctx context.Context, cfg Config) (http.Handler, error) {
 	}, &mcp.StreamableHTTPOptions{
 		Stateless:    true,
 		JSONResponse: true,
-		Logger:       cfg.Logger,
 	})
 	if len(cfg.ForwardHeaders) == 0 {
 		return handler, nil

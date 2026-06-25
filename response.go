@@ -73,8 +73,8 @@ func selectSuccessResponse(operation *openapi3.Operation) successResponseInfo {
 	if operation == nil || operation.Responses == nil {
 		return successResponseInfo{}
 	}
-	keys := operation.Responses.Keys()
-	slices.Sort(keys)
+	keys := sortedResponseKeys(operation.Responses)
+	var emptySuccess successResponseInfo
 	for _, key := range keys {
 		if !strings.HasPrefix(key, "2") {
 			continue
@@ -87,9 +87,12 @@ func selectSuccessResponse(operation *openapi3.Operation) successResponseInfo {
 		if media != nil {
 			return successResponseInfo{status: key, mediaType: mediaType, response: ref.Value, media: media}
 		}
-		if len(ref.Value.Content) == 0 {
-			return successResponseInfo{status: key, response: ref.Value}
+		if len(ref.Value.Content) == 0 && emptySuccess.response == nil {
+			emptySuccess = successResponseInfo{status: key, response: ref.Value}
 		}
+	}
+	if emptySuccess.response != nil {
+		return emptySuccess
 	}
 	if ref := operation.Responses.Default(); ref != nil && ref.Value != nil {
 		mediaType, media := selectJSONMediaType(ref.Value.Content)

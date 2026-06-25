@@ -37,7 +37,7 @@ func LoadCatalog(ctx context.Context, cfg Config) (*Catalog, error) {
 
 	if cfg.RefFS != nil {
 		loader.IsExternalRefsAllowed = true
-		loader.ReadFromURIFunc = fsRefReader(cfg.RefFS)
+		loader.ReadFromURIFunc = fsRefReader(cfg.RefFS, fsRefRoot(cfg.SpecBaseURI))
 	} else if cfg.SpecBaseURI != nil {
 		refRoot, err := resolveRefRoot(cfg)
 		if err != nil {
@@ -184,7 +184,15 @@ func guardedRefReader(refRoot string) openapi3.ReadFromURIFunc {
 	}
 }
 
-func fsRefReader(files fs.FS) openapi3.ReadFromURIFunc {
+func fsRefRoot(specBaseURI *url.URL) string {
+	if specBaseURI == nil || specBaseURI.Path == "" {
+		return "."
+	}
+	root := path.Dir(path.Clean(specBaseURI.Path))
+	return strings.TrimPrefix(root, "/")
+}
+
+func fsRefReader(files fs.FS, refRoot string) openapi3.ReadFromURIFunc {
 	return func(_ *openapi3.Loader, uri *url.URL) ([]byte, error) {
 		if uri.Scheme != "" && uri.Scheme != "file" {
 			return nil, fmt.Errorf("remote OpenAPI refs are not supported: %s", uri.String())
@@ -196,8 +204,19 @@ func fsRefReader(files fs.FS) openapi3.ReadFromURIFunc {
 		if name == "." || name == "" {
 			return nil, errors.New("empty OpenAPI ref path")
 		}
+		if refRoot != "." && !isWithinFSRoot(refRoot, name) {
+			return nil, fmt.Errorf("OpenAPI ref %q escapes RefFS root %q", name, refRoot)
+		}
 		return fs.ReadFile(files, name)
 	}
+}
+
+func isWithinFSRoot(root string, candidate string) bool {
+	rel, err := filepath.Rel(root, candidate)
+	if err != nil {
+		return false
+	}
+	return rel == "." || (!strings.HasPrefix(rel, ".."+string(filepath.Separator)) && rel != "..")
 }
 
 func cleanAbs(path string) (string, error) {
@@ -223,7 +242,10 @@ func isWithinRoot(root string, candidate string) bool {
 }
 
 func sortedPathKeys(paths *openapi3.Paths) []string {
-	keys := paths.Keys()
+	keys := make([]string, 0, paths.Len())
+	for key := range paths.Map() {
+		keys = append(keys, key)
+	}
 	slices.Sort(keys)
 	return keys
 }
@@ -235,6 +257,15 @@ func sortedMethods(operations map[string]*openapi3.Operation) []string {
 	}
 	slices.Sort(methods)
 	return methods
+}
+
+func sortedResponseKeys(responses *openapi3.Responses) []string {
+	keys := make([]string, 0, responses.Len())
+	for key := range responses.Map() {
+		keys = append(keys, key)
+	}
+	slices.Sort(keys)
+	return keys
 }
 
 func buildOperation(pathName string, method string, pathItem *openapi3.PathItem, operation *openapi3.Operation, rootSecurity openapi3.SecurityRequirements, toolNamePrefix string, usedNames map[string]int) (*Operation, error) {
@@ -465,8 +496,7 @@ func buildDescription(method string, pathName string, operation *openapi3.Operat
 		}
 	}
 	if operation.Responses != nil {
-		codes := operation.Responses.Keys()
-		slices.Sort(codes)
+		codes := sortedResponseKeys(operation.Responses)
 		if len(codes) > 0 {
 			parts = append(parts, "Responses: "+strings.Join(codes, ", "))
 		}

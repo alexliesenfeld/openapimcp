@@ -103,6 +103,67 @@ paths:
 	}
 }
 
+func TestLoadCatalogSanitizesTruncatesAndUniquifiesToolNames(t *testing.T) {
+	longID := strings.Repeat("a", maxToolNameLength+40)
+	spec := `
+openapi: 3.0.3
+info:
+  title: Names API
+  version: 1.0.0
+paths:
+  /invalid-one:
+    get:
+      operationId: '!!!'
+      responses:
+        '200':
+          description: ok
+  /invalid-two:
+    get:
+      operationId: '???'
+      responses:
+        '200':
+          description: ok
+  /long-one:
+    get:
+      operationId: ` + longID + `!
+      responses:
+        '200':
+          description: ok
+  /long-two:
+    get:
+      operationId: ` + longID + `?
+      responses:
+        '200':
+          description: ok
+`
+
+	catalog, err := LoadCatalog(context.Background(), Config{Spec: strings.NewReader(spec)})
+	if err != nil {
+		t.Fatalf("LoadCatalog() error = %v", err)
+	}
+
+	invalidOne := findOperation(t, catalog, "GET", "/invalid-one")
+	invalidTwo := findOperation(t, catalog, "GET", "/invalid-two")
+	if invalidOne.ToolName != "operation" {
+		t.Fatalf("invalid one ToolName = %q, want operation", invalidOne.ToolName)
+	}
+	if invalidTwo.ToolName == "operation" || !strings.HasPrefix(invalidTwo.ToolName, "operation_") {
+		t.Fatalf("invalid two ToolName = %q, want operation hash suffix", invalidTwo.ToolName)
+	}
+
+	longOne := findOperation(t, catalog, "GET", "/long-one")
+	longTwo := findOperation(t, catalog, "GET", "/long-two")
+	if len(longOne.ToolName) != maxToolNameLength {
+		t.Fatalf("long one ToolName length = %d, want %d", len(longOne.ToolName), maxToolNameLength)
+	}
+	if len(longTwo.ToolName) > maxToolNameLength {
+		t.Fatalf("long two ToolName length = %d, want <= %d", len(longTwo.ToolName), maxToolNameLength)
+	}
+	if longOne.ToolName == longTwo.ToolName || !strings.Contains(longTwo.ToolName, "_") {
+		t.Fatalf("long duplicate names = %q and %q, want unique hash suffix", longOne.ToolName, longTwo.ToolName)
+	}
+}
+
 func TestLoadCatalogIncludesPrefixSecurityAndResponseSchemas(t *testing.T) {
 	spec := `
 openapi: 3.0.3
@@ -183,6 +244,81 @@ paths:
 	}
 }
 
+func TestLoadCatalogPrefersJSONSuccessResponseForOutputSchema(t *testing.T) {
+	spec := `
+openapi: 3.0.3
+info:
+  title: Response API
+  version: 1.0.0
+paths:
+  /widgets:
+    post:
+      operationId: createWidget
+      responses:
+        '200':
+          description: accepted without a body
+        '201':
+          description: created widget
+          content:
+            application/vnd.widget+json:
+              schema:
+                type: object
+                properties:
+                  id:
+                    type: string
+                    description: Widget ID
+`
+	catalog, err := LoadCatalog(context.Background(), Config{Spec: strings.NewReader(spec)})
+	if err != nil {
+		t.Fatalf("LoadCatalog() error = %v", err)
+	}
+	op := findOperation(t, catalog, "POST", "/widgets")
+	if !strings.Contains(op.ResponseDocumentation, "(201)") ||
+		!strings.Contains(op.ResponseDocumentation, "application/vnd.widget+json") ||
+		!strings.Contains(op.ResponseDocumentation, "body.id") {
+		t.Fatalf("ResponseDocumentation = %q, want JSON 201 response fields", op.ResponseDocumentation)
+	}
+	body := op.OutputSchema["properties"].(map[string]any)["body"].(map[string]any)
+	if body["properties"].(map[string]any)["id"] == nil {
+		t.Fatalf("OutputSchema body = %#v, want id property", body)
+	}
+}
+
+func TestLoadCatalogUsesDefaultResponseForOutputSchema(t *testing.T) {
+	spec := `
+openapi: 3.0.3
+info:
+  title: Default Response API
+  version: 1.0.0
+paths:
+  /search:
+    get:
+      operationId: search
+      responses:
+        default:
+          description: default response
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  message:
+                    type: string
+`
+	catalog, err := LoadCatalog(context.Background(), Config{Spec: strings.NewReader(spec)})
+	if err != nil {
+		t.Fatalf("LoadCatalog() error = %v", err)
+	}
+	op := findOperation(t, catalog, "GET", "/search")
+	if !strings.Contains(op.ResponseDocumentation, "(default)") || !strings.Contains(op.ResponseDocumentation, "body.message") {
+		t.Fatalf("ResponseDocumentation = %q, want default response fields", op.ResponseDocumentation)
+	}
+	body := op.OutputSchema["properties"].(map[string]any)["body"].(map[string]any)
+	if body["properties"].(map[string]any)["message"] == nil {
+		t.Fatalf("OutputSchema body = %#v, want message property", body)
+	}
+}
+
 func TestLoadCatalogRejectsUnsupportedOpenAPIVersion(t *testing.T) {
 	spec := `
 openapi: 3.2.0
@@ -194,6 +330,48 @@ paths: {}
 	_, err := LoadCatalog(context.Background(), Config{Spec: strings.NewReader(spec)})
 	if err == nil || !strings.Contains(err.Error(), "unsupported OpenAPI version") {
 		t.Fatalf("LoadCatalog() error = %v, want unsupported version", err)
+	}
+}
+
+func TestLoadCatalogReportsMissingAndMalformedSpecs(t *testing.T) {
+	if _, err := LoadCatalog(context.Background(), Config{}); err == nil || !strings.Contains(err.Error(), "Spec is required") {
+		t.Fatalf("LoadCatalog() missing spec error = %v, want Spec is required", err)
+	}
+
+	_, err := LoadCatalog(context.Background(), Config{Spec: strings.NewReader("openapi: [")})
+	if err == nil || !strings.Contains(err.Error(), "load OpenAPI spec") {
+		t.Fatalf("LoadCatalog() malformed spec error = %v, want load error", err)
+	}
+}
+
+func TestLoadCatalogSkipValidationAllowsInvalidDocumentShape(t *testing.T) {
+	spec := `
+openapi: 3.0.3
+info:
+  title: Invalid API
+  version: 1.0.0
+paths:
+  /pets/{id}:
+    get:
+      operationId: getPet
+      responses:
+        '200':
+          description: ok
+`
+	_, err := LoadCatalog(context.Background(), Config{Spec: strings.NewReader(spec)})
+	if err == nil || !strings.Contains(err.Error(), "validate OpenAPI spec") {
+		t.Fatalf("LoadCatalog() error = %v, want validation error", err)
+	}
+
+	catalog, err := LoadCatalog(context.Background(), Config{
+		Spec:           strings.NewReader(spec),
+		SkipValidation: true,
+	})
+	if err != nil {
+		t.Fatalf("LoadCatalog(SkipValidation) error = %v", err)
+	}
+	if len(catalog.Operations) != 1 {
+		t.Fatalf("operations = %d, want 1", len(catalog.Operations))
 	}
 }
 
@@ -350,6 +528,71 @@ components:
 	}
 }
 
+func TestLoadCatalogFromFSRejectsRemoteRefs(t *testing.T) {
+	files := fstest.MapFS{
+		"openapi.yaml": &fstest.MapFile{Data: []byte(`
+openapi: 3.0.3
+info:
+  title: Embedded API
+  version: 1.0.0
+paths:
+  /pets:
+    get:
+      operationId: listPets
+      responses:
+        '200':
+          description: ok
+          content:
+            application/json:
+              schema:
+                $ref: 'https://example.com/schemas.yaml#/components/schemas/Pet'
+`)},
+	}
+
+	_, err := LoadCatalogFromFS(context.Background(), files, "openapi.yaml", Config{})
+	if err == nil || !strings.Contains(err.Error(), "remote OpenAPI refs are not supported") {
+		t.Fatalf("LoadCatalogFromFS() error = %v, want remote ref rejection", err)
+	}
+}
+
+func TestLoadCatalogFromFSRejectsRefsEscapingSpecDirectory(t *testing.T) {
+	files := fstest.MapFS{
+		"spec/openapi.yaml": &fstest.MapFile{Data: []byte(`
+openapi: 3.0.3
+info:
+  title: Embedded API
+  version: 1.0.0
+paths:
+  /pets:
+    get:
+      operationId: listPets
+      responses:
+        '200':
+          description: ok
+          content:
+            application/json:
+              schema:
+                $ref: '../outside.yaml#/components/schemas/Pet'
+`)},
+		"outside.yaml": &fstest.MapFile{Data: []byte(`
+openapi: 3.0.3
+info:
+  title: Outside
+  version: 1.0.0
+paths: {}
+components:
+  schemas:
+    Pet:
+      type: object
+`)},
+	}
+
+	_, err := LoadCatalogFromFS(context.Background(), files, "spec/openapi.yaml", Config{})
+	if err == nil || !strings.Contains(err.Error(), "escapes RefFS root") {
+		t.Fatalf("LoadCatalogFromFS() error = %v, want RefFS root escape rejection", err)
+	}
+}
+
 func TestLoadCatalogFromFileSetsSpecBaseURIForLocalRefs(t *testing.T) {
 	dir := t.TempDir()
 	writeFile(t, filepath.Join(dir, "schemas.yaml"), `
@@ -436,6 +679,102 @@ paths:
 	})
 	if err == nil || !strings.Contains(err.Error(), "escapes RefRoot") {
 		t.Fatalf("LoadCatalog() error = %v, want escaping ref rejection", err)
+	}
+}
+
+func TestLoadCatalogRejectsUnsupportedSpecBaseURI(t *testing.T) {
+	spec := `
+openapi: 3.0.3
+info:
+  title: Bad URI
+  version: 1.0.0
+paths: {}
+`
+	_, err := LoadCatalog(context.Background(), Config{
+		Spec:        strings.NewReader(spec),
+		SpecBaseURI: mustParseURL(t, "https://example.com/openapi.yaml"),
+	})
+	if err == nil || !strings.Contains(err.Error(), `scheme "https" cannot be used`) {
+		t.Fatalf("LoadCatalog() error = %v, want unsupported scheme", err)
+	}
+
+	_, err = LoadCatalog(context.Background(), Config{
+		Spec:        strings.NewReader(spec),
+		SpecBaseURI: &url.URL{Scheme: "file", Host: "example.com", Path: "/openapi.yaml"},
+	})
+	if err == nil || !strings.Contains(err.Error(), `host "example.com" is not supported`) {
+		t.Fatalf("LoadCatalog() error = %v, want unsupported host", err)
+	}
+}
+
+func TestLoadCatalogExplicitRefRootAllowsParentWithinRootAndRejectsSiblings(t *testing.T) {
+	dir := t.TempDir()
+	rootDir := filepath.Join(dir, "allowed")
+	specDir := filepath.Join(rootDir, "specs")
+	if err := os.MkdirAll(specDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	writeFile(t, filepath.Join(rootDir, "schemas.yaml"), `
+openapi: 3.0.3
+info:
+  title: Schemas
+  version: 1.0.0
+paths: {}
+components:
+  schemas:
+    Pet:
+      type: object
+      properties:
+        id:
+          type: string
+`)
+	writeFile(t, filepath.Join(dir, "outside.yaml"), `
+openapi: 3.0.3
+info:
+  title: Outside
+  version: 1.0.0
+paths: {}
+components:
+  schemas:
+    Pet:
+      type: object
+`)
+	specPath := filepath.Join(specDir, "openapi.yaml")
+	allowedSpec := `
+openapi: 3.0.3
+info:
+  title: Rooted API
+  version: 1.0.0
+paths:
+  /pets:
+    get:
+      operationId: listPets
+      responses:
+        '200':
+          description: ok
+          content:
+            application/json:
+              schema:
+                $ref: '../schemas.yaml#/components/schemas/Pet'
+`
+	catalog, err := LoadCatalog(context.Background(), Config{
+		Spec:        strings.NewReader(allowedSpec),
+		SpecBaseURI: fileURL(t, specPath),
+		RefRoot:     rootDir,
+	})
+	if err != nil {
+		t.Fatalf("LoadCatalog() allowed ref error = %v", err)
+	}
+	findOperation(t, catalog, "GET", "/pets")
+
+	escapeSpec := strings.Replace(allowedSpec, "../schemas.yaml", "../../outside.yaml", 1)
+	_, err = LoadCatalog(context.Background(), Config{
+		Spec:        strings.NewReader(escapeSpec),
+		SpecBaseURI: fileURL(t, specPath),
+		RefRoot:     rootDir,
+	})
+	if err == nil || !strings.Contains(err.Error(), "escapes RefRoot") {
+		t.Fatalf("LoadCatalog() error = %v, want RefRoot escape rejection", err)
 	}
 }
 

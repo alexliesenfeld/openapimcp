@@ -18,9 +18,7 @@ func NewServer(ctx context.Context, cfg Config) (*mcp.Server, error) {
 	server := mcp.NewServer(&mcp.Implementation{
 		Name:    catalog.Name,
 		Version: catalog.Version,
-	}, &mcp.ServerOptions{
-		Logger: cfg.Logger,
-	})
+	}, &mcp.ServerOptions{})
 
 	for _, operation := range catalog.Operations {
 		op := operation
