@@ -8,7 +8,7 @@ import (
 	"net/url"
 	"strings"
 
-	"github.com/alexliesenfeld/oapitomcp"
+	"github.com/alexliesenfeld/openapimcp"
 )
 
 const openAPISpec = `

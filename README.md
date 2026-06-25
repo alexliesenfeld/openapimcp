@@ -5,7 +5,7 @@
 No code generation is required: pass an OpenAPI document reader to the library, mount the returned handler wherever your application already serves HTTP, and agents can discover/call the API through MCP.
 
 ```sh
-go get github.com/alexliesenfeld/oapitomcp
+go get github.com/alexliesenfeld/openapimcp
 ```
 
 ## Handler Usage

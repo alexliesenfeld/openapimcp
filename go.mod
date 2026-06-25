@@ -1,4 +1,4 @@
-module github.com/alexliesenfeld/oapitomcp
+module github.com/alexliesenfeld/openapimcp
 
 go 1.23.0
 
